@@ -173,52 +173,168 @@ static void handle_input(int pty_fd)
 // Rendering
 // ---------------------------------------------------------------------------
 
-// Render the current terminal screen contents into the raylib window.
-//
-// Uses the ghostty formatter API to extract the visible screen as plain
-// text (with trailing whitespace trimmed), then draws each line using
-// the provided monospace font.
-//
-// This is intentionally simple — it ignores colors/styles and just draws
-// green-on-black text.  A future renderer should use the render state API
-// or iterate cells individually to support colors, bold, underline, etc.
-static void render_terminal(GhosttyTerminal terminal, Font font)
+// Resolve a style color to an RGB value using the render-state palette.
+// Falls back to the given default if the color is unset.
+static GhosttyColorRgb resolve_color(GhosttyStyleColor color,
+                                     const GhosttyRenderStateColors *colors,
+                                     GhosttyColorRgb fallback)
 {
-    // Configure the formatter: plain text output with trailing blanks
-    // trimmed so we don't draw unnecessary spaces.
-    GhosttyFormatterTerminalOptions fmt = GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
-    fmt.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-    fmt.trim = true;
+    switch (color.tag) {
+    case GHOSTTY_STYLE_COLOR_RGB:     return color.value.rgb;
+    case GHOSTTY_STYLE_COLOR_PALETTE: return colors->palette[color.value.palette];
+    default:                          return fallback;
+    }
+}
 
-    GhosttyFormatter formatter;
-    if (ghostty_formatter_terminal_new(NULL, &formatter, terminal, fmt) != GHOSTTY_SUCCESS)
+// Encode a single Unicode codepoint into a UTF-8 byte buffer.
+// Returns the number of bytes written (1–4).
+static int utf8_encode(uint32_t cp, char out[4])
+{
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    } else if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    } else if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    } else {
+        out[0] = (char)(0xF0 | (cp >> 18));
+        out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[3] = (char)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+}
+
+// Render the current terminal screen using the RenderState API.
+//
+// For each row/cell we read the grapheme codepoints and the cell's style,
+// resolve foreground/background colors via the palette, and draw each
+// character individually with DrawTextEx.  This supports per-cell colors
+// from SGR sequences (bold, 256-color, 24-bit RGB, etc.).
+static void render_terminal(GhosttyRenderState render_state,
+                            GhosttyRenderStateRowIterator row_iter,
+                            GhosttyRenderStateRowCells cells,
+                            Font font)
+{
+    // Grab colors (palette, default fg/bg) from the render state so we
+    // can resolve palette-indexed cell colors.
+    GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+    if (ghostty_render_state_colors_get(render_state, &colors) != GHOSTTY_SUCCESS)
         return;
 
-    // Format the entire screen into a heap-allocated buffer.  The
-    // formatter returns a single string with newline-separated rows.
-    uint8_t *buf = NULL;
-    size_t len = 0;
-    if (ghostty_formatter_format_alloc(formatter, NULL, &buf, &len) == GHOSTTY_SUCCESS) {
-        int y = 10; // vertical offset from top of window
-        const char *line_start = (const char *)buf;
-
-        // Walk the buffer and split on newlines, drawing each line.
-        for (size_t i = 0; i <= len; i++) {
-            if (i == len || buf[i] == '\n') {
-                int line_len = (int)((const char *)&buf[i] - line_start);
-                char line[256] = {0};
-                if (line_len > 0 && line_len < 255) {
-                    memcpy(line, line_start, line_len);
-                    line[line_len] = '\0';
-                    DrawTextEx(font, line, (Vector2){10, y}, 16, 0, GREEN);
-                }
-                y += 18; // line height in pixels
-                line_start = (const char *)&buf[i + 1];
-            }
-        }
-        free(buf);
+    // The bare terminal has no config, so the default fg/bg may both be
+    // (0,0,0).  Fall back to standard terminal defaults (white on black)
+    // so text is actually visible.
+    // https://github.com/ghostty-org/ghostty/issues/11704
+    if (colors.foreground.r == 0 && colors.foreground.g == 0 && colors.foreground.b == 0 &&
+        colors.background.r == 0 && colors.background.g == 0 && colors.background.b == 0) {
+        colors.foreground = (GhosttyColorRgb){ 255, 255, 255 };
     }
-    ghostty_formatter_free(formatter);
+
+    // Populate the row iterator from the current render state snapshot.
+    if (ghostty_render_state_get(render_state,
+            GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &row_iter) != GHOSTTY_SUCCESS)
+        return;
+
+    int y = 10; // vertical offset from top of window
+
+    while (ghostty_render_state_row_iterator_next(row_iter)) {
+        // Get the cells for this row (reuses the same cells handle).
+        if (ghostty_render_state_row_get(row_iter,
+                GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) != GHOSTTY_SUCCESS)
+            continue;
+
+        int x = 10; // horizontal offset
+
+        while (ghostty_render_state_row_cells_next(cells)) {
+            // How many codepoints make up the grapheme? 0 = empty cell.
+            uint32_t grapheme_len = 0;
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
+
+            if (grapheme_len == 0) {
+                x += 10; // advance by one cell width
+                continue;
+            }
+
+            // Read the grapheme codepoints.
+            uint32_t codepoints[16];
+            uint32_t len = grapheme_len < 16 ? grapheme_len : 16;
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, codepoints);
+
+            // Build a UTF-8 string from the grapheme codepoints.
+            char text[64];
+            int pos = 0;
+            for (uint32_t i = 0; i < len && pos < 60; i++) {
+                char u8[4];
+                int n = utf8_encode(codepoints[i], u8);
+                memcpy(&text[pos], u8, n);
+                pos += n;
+            }
+            text[pos] = '\0';
+
+            // Read the style and resolve the foreground color.
+            GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
+
+            GhosttyColorRgb fg = resolve_color(style.fg_color, &colors, colors.foreground);
+            Color ray_fg = { fg.r, fg.g, fg.b, 255 };
+
+            // Draw a background rectangle if the cell has a non-default bg.
+            if (style.bg_color.tag != GHOSTTY_STYLE_COLOR_NONE) {
+                GhosttyColorRgb bg = resolve_color(style.bg_color, &colors, colors.background);
+                DrawRectangle(x, y, 10, 18, (Color){ bg.r, bg.g, bg.b, 255 });
+            }
+
+            DrawTextEx(font, text, (Vector2){x, y}, 16, 0, ray_fg);
+            x += 10; // advance by one cell width
+        }
+
+        // Clear per-row dirty flag after rendering it.
+        bool clean = false;
+        ghostty_render_state_row_set(row_iter,
+            GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean);
+
+        y += 18; // line height in pixels
+    }
+
+    // Draw the cursor.
+    bool cursor_visible = false;
+    ghostty_render_state_get(render_state,
+        GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursor_visible);
+    bool cursor_in_viewport = false;
+    ghostty_render_state_get(render_state,
+        GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursor_in_viewport);
+
+    if (cursor_visible && cursor_in_viewport) {
+        uint16_t cx = 0, cy = 0;
+        ghostty_render_state_get(render_state,
+            GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx);
+        ghostty_render_state_get(render_state,
+            GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy);
+
+        // Draw the cursor using the foreground color (or explicit cursor
+        // color if the terminal set one).
+        GhosttyColorRgb cur_rgb = colors.foreground;
+        if (colors.cursor_has_value)
+            cur_rgb = colors.cursor;
+        int cur_x = 10 + cx * 10;
+        int cur_y = 10 + cy * 18;
+        DrawRectangle(cur_x, cur_y, 10, 18, (Color){ cur_rgb.r, cur_rgb.g, cur_rgb.b, 128 });
+    }
+
+    // Reset global dirty state so the next update reports changes accurately.
+    GhosttyRenderStateDirty clean_state = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    ghostty_render_state_set(render_state,
+        GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean_state);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +368,20 @@ int main(void)
     // Load the embedded monospace font for terminal text rendering.
     Font mono_font = LoadFontFromMemory(".ttf", font_jetbrains_mono, (int)sizeof(font_jetbrains_mono), 16, NULL, 0);
     SetTextureFilter(mono_font.texture, TEXTURE_FILTER_BILINEAR);
+
+    // Create the render state and its reusable iterator/cells handles once
+    // up front.  These are updated each frame rather than recreated.
+    GhosttyRenderState render_state = NULL;
+    err = ghostty_render_state_new(NULL, &render_state);
+    assert(err == GHOSTTY_SUCCESS);
+
+    GhosttyRenderStateRowIterator row_iter = NULL;
+    err = ghostty_render_state_row_iterator_new(NULL, &row_iter);
+    assert(err == GHOSTTY_SUCCESS);
+
+    GhosttyRenderStateRowCells row_cells = NULL;
+    err = ghostty_render_state_row_cells_new(NULL, &row_cells);
+    assert(err == GHOSTTY_SUCCESS);
 
     // Track window size so we only recalculate the grid on actual changes.
     int prev_width = GetScreenWidth();
@@ -287,10 +417,20 @@ int main(void)
         // Forward keyboard input to the shell.
         handle_input(pty_fd);
 
+        // Snapshot the terminal state into our render state.  This is the
+        // only point where we need access to the terminal; after this the
+        // render state owns everything we need to draw the frame.
+        ghostty_render_state_update(render_state, terminal);
+
+        // Get the terminal's background color from the render state.
+        GhosttyRenderStateColors bg_colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+        ghostty_render_state_colors_get(render_state, &bg_colors);
+        Color win_bg = { bg_colors.background.r, bg_colors.background.g, bg_colors.background.b, 255 };
+
         // Draw the current terminal screen.
         BeginDrawing();
-        ClearBackground(BLACK);
-        render_terminal(terminal, mono_font);
+        ClearBackground(win_bg);
+        render_terminal(render_state, row_iter, row_cells, mono_font);
         EndDrawing();
     }
 
@@ -300,6 +440,9 @@ int main(void)
     close(pty_fd);
     kill(child, SIGHUP);    // signal the child shell to exit
     waitpid(child, NULL, 0); // reap the child to avoid a zombie
+    ghostty_render_state_row_cells_free(row_cells);
+    ghostty_render_state_row_iterator_free(row_iter);
+    ghostty_render_state_free(render_state);
     ghostty_terminal_free(terminal);
     return 0;
 }
