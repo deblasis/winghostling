@@ -30,12 +30,8 @@ endif()
 # required Zig version.
 FetchContent_Declare(ghostty
   GIT_REPOSITORY https://github.com/ghostty-org/ghostty.git
-  GIT_TAG main
+  GIT_TAG e8fb7eabad8bd4bebb64ca7fcad80442763dcb84
 )
-# When building in Release mode, tell the Zig build to optimise aggressively.
-if (CMAKE_BUILD_TYPE STREQUAL "Release")
-  set(GHOSTTY_ZIG_BUILD_FLAGS "-Doptimize=ReleaseFast" CACHE STRING "" FORCE)
-endif()
 FetchContent_MakeAvailable(ghostty)
 
 # --- Embed font as a C header ------------------------------------------------
