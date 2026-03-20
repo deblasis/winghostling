@@ -114,3 +114,28 @@ After the initial configure, you only need to run the build step:
 ```sh
 cmake --build build
 ```
+
+## FAQ
+
+### Why Not Zig?
+
+libghostty-vt has a fully capable and proven Zig API. Ghostty GUI itself
+uses this and is a good -- although complex -- example of how to use it.
+However, this demo is meant to showcase the minimal C API since C is so
+much more broadly used and accessible to a wide variety of developers and
+language ecosystems.
+
+### What about Rust or any other language?
+
+libghostty-vt has a C API and can have zero dependencies, so it can be used
+with minimally thin bindings in basically any language. I'm not sure yet if
+the Ghostty project will maintain official bindings for languages other than C
+and Zig, but I hope the community will create and maintain bindings for many
+languages!
+
+### Why CMake, Raylib, etc.?
+
+I needed to pick _something_. Really, any build system and any library
+could be used. CMake is widely used and supported, and Raylib is a simple
+and elegant library for windowing and 2D rendering that is easy to set up.
+Don't get bogged down in these details!
