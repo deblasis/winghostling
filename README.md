@@ -15,6 +15,22 @@ contexts.
 > terminal. It is a minimal viable terminal based on libghostty. Still,
 > it supports a lot more features than even the average terminal emulator!
 
+## What is Libghostty?
+
+Libghostty is an embeddable library extracted from [Ghostty's](https://ghostty.org) core,
+exposing a C and Zig API so any application can embed correct, fast terminal
+emulation.
+
+Ghostling uses **libghostty-vt**, a zero-dependency library (not even libc) that
+handles VT sequence parsing, terminal state management (cursor position,
+styles, text reflow, scrollback, etc.), and renderer state management. It
+contains no renderer drawing or windowing code; the consumer (Ghostling, in
+this case) provides its own. The core logic is extracted directly from Ghostty
+and inherits all of its real-world benefits: excellent, accurate, and complete
+terminal emulation support, SIMD-optimized parsing, leading Unicode support,
+highly optimized memory usage, and a robust fuzzed and tested codebase, all
+proven by millions of daily active users of Ghostty GUI.
+
 ## Features
 
 Despite being a minimal, thin layer above libghostty, look at all the
@@ -41,6 +57,11 @@ These features aren't properly exposed by libghostty-vt yet but will be:
 - Kitty Graphics Protocol
 - OSC clipboard support
 - OSC title setting
+
+These are things that could work but haven't been tested or aren't
+implemented in Ghostling itself:
+
+- Windows support (libghostty-vt supports Windows)
 
 This list is incomplete and we'll add things as we find them.
 
