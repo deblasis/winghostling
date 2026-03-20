@@ -1,7 +1,8 @@
 # Ghostling - Minimal libghostty Terminal
 
 Ghostling is a demo project meant to highlight a minimum
-functional terminal built on the libghostty C API in a single C file.
+functional terminal built on the libghostty C API in a
+[single C file](https://github.com/ghostty-org/ghostling/blob/main/main.c).
 
 The example uses Raylib for windowing and rendering. It is single-threaded
 (although libghostty-vt supports threading) and uses a 2D graphics renderer
