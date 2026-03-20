@@ -267,6 +267,31 @@ static void render_terminal(GhosttyRenderState render_state,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
 
             if (grapheme_len == 0) {
+                // The cell has no text, but it might be a bg-color-only cell.
+                // Check the content tag on the raw cell to find out.
+                GhosttyCell raw_cell = 0;
+                ghostty_render_state_row_cells_get(cells,
+                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw_cell);
+
+                GhosttyCellContentTag content_tag = 0;
+                ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_CONTENT_TAG, &content_tag);
+
+                if (content_tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+                    // Palette index is stored in bits [2:9] of the packed cell.
+                    uint8_t palette_idx = (uint8_t)((raw_cell >> 2) & 0xFF);
+                    GhosttyColorRgb bg = colors.palette[palette_idx];
+                    DrawRectangle(x, y, cell_width, cell_height,
+                                  (Color){ bg.r, bg.g, bg.b, 255 });
+                } else if (content_tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+                    // RGB is stored in bits [2:25] of the packed cell (r, g, b
+                    // each 8 bits, little-endian packed struct order).
+                    uint8_t r = (uint8_t)((raw_cell >> 2) & 0xFF);
+                    uint8_t g = (uint8_t)((raw_cell >> 10) & 0xFF);
+                    uint8_t b = (uint8_t)((raw_cell >> 18) & 0xFF);
+                    DrawRectangle(x, y, cell_width, cell_height,
+                                  (Color){ r, g, b, 255 });
+                }
+
                 x += cell_width;
                 continue;
             }
