@@ -481,6 +481,71 @@ static void handle_input(int pty_fd, GhosttyKeyEncoder encoder,
     }
 }
 
+// Handle scrollbar drag-to-scroll.  When the user clicks in the
+// scrollbar region we begin tracking; while held we map the mouse Y
+// position directly to an absolute scroll offset so the thumb follows
+// the cursor exactly.
+//
+// Returns true while a drag is in progress so the caller can skip
+// normal mouse handling if desired.
+static bool handle_scrollbar(GhosttyTerminal terminal,
+                             GhosttyRenderState render_state,
+                             bool *dragging)
+{
+    // Query scrollbar geometry from the terminal.
+    GhosttyTerminalScrollbar scrollbar = {0};
+    if (ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR,
+                             &scrollbar) != GHOSTTY_SUCCESS)
+        return false;
+
+    // Nothing to drag when the viewport covers all content.
+    if (scrollbar.total <= scrollbar.len) {
+        *dragging = false;
+        return false;
+    }
+
+    int scr_w = GetScreenWidth();
+    int scr_h = GetScreenHeight();
+    const int bar_width = 6;
+    const int bar_margin = 2;
+    int bar_left = scr_w - bar_width - bar_margin;
+    // Use a wider hit region for easier grabbing.
+    int hit_left = bar_left - 8;
+    Vector2 mpos = GetMousePosition();
+
+    // Start a drag when the user clicks inside the hit region.
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+        && mpos.x >= hit_left && mpos.x <= scr_w) {
+        *dragging = true;
+    }
+
+    if (*dragging && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        // Map mouse Y directly to an absolute scroll offset.
+        // Y=0 → top of scrollback (offset 0), Y=scr_h → bottom
+        // (offset = total - len).
+        uint64_t scrollable = scrollbar.total - scrollbar.len;
+        double frac = (double)mpos.y / (double)scr_h;
+        if (frac < 0.0) frac = 0.0;
+        if (frac > 1.0) frac = 1.0;
+        int64_t target = (int64_t)(frac * (double)scrollable);
+
+        intptr_t delta = (intptr_t)(target - (int64_t)scrollbar.offset);
+        if (delta != 0) {
+            GhosttyTerminalScrollViewport sv = {
+                .tag = GHOSTTY_SCROLL_VIEWPORT_DELTA,
+                .value = { .delta = delta },
+            };
+            ghostty_terminal_scroll_viewport(terminal, sv);
+            ghostty_render_state_update(render_state, terminal);
+        }
+    }
+
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
+        *dragging = false;
+
+    return *dragging;
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -830,6 +895,10 @@ int main(void)
     // Track focus state so we only send focus events on transitions.
     bool prev_focused = true;
 
+    // Scrollbar drag state — when the user clicks and drags the
+    // scrollbar thumb we continuously reposition the viewport.
+    bool scrollbar_dragging = false;
+
     // Each frame: handle resize → read pty → process input → render.
     while (!WindowShouldClose()) {
         // Recalculate grid dimensions when the window is resized.
@@ -880,6 +949,10 @@ int main(void)
         handle_mouse(pty_fd, mouse_encoder, mouse_event, terminal,
                      cell_width, cell_height, pad);
 
+        // Handle scrollbar drag-to-scroll before snapshotting so the
+        // render state reflects any scroll position changes this frame.
+        handle_scrollbar(terminal, render_state, &scrollbar_dragging);
+
         // Snapshot the terminal state into our render state.  This is the
         // only point where we need access to the terminal; after this the
         // render state owns everything we need to draw the frame.
@@ -890,8 +963,7 @@ int main(void)
         ghostty_render_state_colors_get(render_state, &bg_colors);
         Color win_bg = { bg_colors.background.r, bg_colors.background.g, bg_colors.background.b, 255 };
 
-        // Query scrollbar state from the terminal so we can draw a
-        // scrollbar indicator when the mouse hovers near the right edge.
+        // Query scrollbar state for the renderer.
         GhosttyTerminalScrollbar scrollbar = {0};
         GhosttyTerminalScrollbar *scrollbar_ptr = NULL;
         if (ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR,
