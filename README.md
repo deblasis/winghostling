@@ -5,7 +5,7 @@ functional terminal built on the libghostty C API in a single C file.
 
 The example uses Raylib for windowing and rendering. It is single-threaded
 (although libghostty-vt supports threading) and uses a 2D graphics renderer
-instead of a direct GPU renderer like the primary Ghostty GUI. This is to
+instead of a direct GPU renderer like the primary [Ghostty](https://ghostty.org) GUI. This is to
 showcase the flexibility of libghostty and how it can be used in a variety of
 contexts.
 
