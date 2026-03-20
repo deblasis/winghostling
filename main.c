@@ -217,10 +217,16 @@ static int utf8_encode(uint32_t cp, char out[4])
 // resolve foreground/background colors via the palette, and draw each
 // character individually with DrawTextEx.  This supports per-cell colors
 // from SGR sequences (bold, 256-color, 24-bit RGB, etc.).
+//
+// cell_width and cell_height are the measured dimensions of a single
+// monospace glyph at the current font size, in screen (logical) pixels.
+// font_size is the logical font size (before DPI scaling).
 static void render_terminal(GhosttyRenderState render_state,
                             GhosttyRenderStateRowIterator row_iter,
                             GhosttyRenderStateRowCells cells,
-                            Font font)
+                            Font font,
+                            int cell_width, int cell_height,
+                            int font_size)
 {
     // Grab colors (palette, default fg/bg) from the render state so we
     // can resolve palette-indexed cell colors.
@@ -242,7 +248,9 @@ static void render_terminal(GhosttyRenderState render_state,
             GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &row_iter) != GHOSTTY_SUCCESS)
         return;
 
-    int y = 10; // vertical offset from top of window
+    // Small padding from the window edges.
+    const int pad = 4;
+    int y = pad;
 
     while (ghostty_render_state_row_iterator_next(row_iter)) {
         // Get the cells for this row (reuses the same cells handle).
@@ -250,7 +258,7 @@ static void render_terminal(GhosttyRenderState render_state,
                 GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) != GHOSTTY_SUCCESS)
             continue;
 
-        int x = 10; // horizontal offset
+        int x = pad;
 
         while (ghostty_render_state_row_cells_next(cells)) {
             // How many codepoints make up the grapheme? 0 = empty cell.
@@ -259,7 +267,7 @@ static void render_terminal(GhosttyRenderState render_state,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
 
             if (grapheme_len == 0) {
-                x += 10; // advance by one cell width
+                x += cell_width;
                 continue;
             }
 
@@ -291,11 +299,11 @@ static void render_terminal(GhosttyRenderState render_state,
             // Draw a background rectangle if the cell has a non-default bg.
             if (style.bg_color.tag != GHOSTTY_STYLE_COLOR_NONE) {
                 GhosttyColorRgb bg = resolve_color(style.bg_color, &colors, colors.background);
-                DrawRectangle(x, y, 10, 18, (Color){ bg.r, bg.g, bg.b, 255 });
+                DrawRectangle(x, y, cell_width, cell_height, (Color){ bg.r, bg.g, bg.b, 255 });
             }
 
-            DrawTextEx(font, text, (Vector2){x, y}, 16, 0, ray_fg);
-            x += 10; // advance by one cell width
+            DrawTextEx(font, text, (Vector2){x, y}, font_size, 0, ray_fg);
+            x += cell_width;
         }
 
         // Clear per-row dirty flag after rendering it.
@@ -303,7 +311,7 @@ static void render_terminal(GhosttyRenderState render_state,
         ghostty_render_state_row_set(row_iter,
             GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean);
 
-        y += 18; // line height in pixels
+        y += cell_height;
     }
 
     // Draw the cursor.
@@ -326,9 +334,9 @@ static void render_terminal(GhosttyRenderState render_state,
         GhosttyColorRgb cur_rgb = colors.foreground;
         if (colors.cursor_has_value)
             cur_rgb = colors.cursor;
-        int cur_x = 10 + cx * 10;
-        int cur_y = 10 + cy * 18;
-        DrawRectangle(cur_x, cur_y, 10, 18, (Color){ cur_rgb.r, cur_rgb.g, cur_rgb.b, 128 });
+        int cur_x = pad + cx * cell_width;
+        int cur_y = pad + cy * cell_height;
+        DrawRectangle(cur_x, cur_y, cell_width, cell_height, (Color){ cur_rgb.r, cur_rgb.g, cur_rgb.b, 128 });
     }
 
     // Reset global dirty state so the next update reports changes accurately.
@@ -343,10 +351,59 @@ static void render_terminal(GhosttyRenderState render_state,
 
 int main(void)
 {
-    // Create a ghostty virtual terminal with an 80×24 grid and 1000 lines
-    // of scrollback.  This holds all the parsed screen state (cells, cursor,
-    // styles, modes) but knows nothing about the pty or the window.
-    uint16_t term_cols = 80, term_rows = 24;
+    // Desired font size in logical (screen) points — the actual texture
+    // will be rasterized at font_size * dpi_scale so glyphs stay crisp on
+    // HiDPI / Retina displays.
+    const int font_size = 16;
+
+    // Enable HiDPI *before* creating the window so raylib can set up the
+    // framebuffer at the native display resolution.
+    SetConfigFlags(FLAG_WINDOW_HIGHDPI);
+
+    // Initialize window
+    InitWindow(800, 600, "ghostling");
+    SetWindowState(FLAG_WINDOW_RESIZABLE);
+    SetTargetFPS(60);
+
+    // Query the DPI scale so we can rasterize the font at the true pixel
+    // size.  On a 2× Retina display this returns {2.0, 2.0}.
+    Vector2 dpi_scale = GetWindowScaleDPI();
+
+    // Load the embedded monospace font at the native pixel size so every
+    // glyph maps 1:1 to screen pixels — no texture scaling, no blur.
+    int font_size_px = (int)(font_size * dpi_scale.y);
+    Font mono_font = LoadFontFromMemory(".ttf", font_jetbrains_mono,
+                         (int)sizeof(font_jetbrains_mono), font_size_px, NULL, 0);
+
+    // Use bilinear filtering; the texture is already at native resolution
+    // so there's no magnification blur, and this avoids jagged edges when
+    // fractional positioning occurs.
+    SetTextureFilter(mono_font.texture, TEXTURE_FILTER_BILINEAR);
+
+    // Measure a representative glyph to derive the monospace cell size.
+    // MeasureTextEx returns logical-pixel dimensions (already accounts for
+    // the font's internal scaling), so divide by the DPI scale to get the
+    // screen-space cell size we use for layout.
+    Vector2 glyph_size = MeasureTextEx(mono_font, "M", font_size_px, 0);
+    int cell_width  = (int)(glyph_size.x / dpi_scale.x);
+    int cell_height = (int)(glyph_size.y / dpi_scale.y);
+
+    // Small padding from window edges — must match the constant in
+    // render_terminal().
+    const int pad = 4;
+
+    // Compute the initial grid from the window size and measured cell
+    // metrics.
+    int scr_w = GetScreenWidth();
+    int scr_h = GetScreenHeight();
+    uint16_t term_cols = (uint16_t)((scr_w - 2 * pad) / cell_width);
+    uint16_t term_rows = (uint16_t)((scr_h - 2 * pad) / cell_height);
+    if (term_cols < 1) term_cols = 1;
+    if (term_rows < 1) term_rows = 1;
+
+    // Create a ghostty virtual terminal with the computed grid and 1000
+    // lines of scrollback.  This holds all the parsed screen state (cells,
+    // cursor, styles, modes) but knows nothing about the pty or the window.
     GhosttyTerminal terminal;
     GhosttyTerminalOptions opts = { .cols = term_cols, .rows = term_rows, .max_scrollback = 1000 };
     GhosttyResult err = ghostty_terminal_new(NULL, &terminal, opts);
@@ -359,15 +416,6 @@ int main(void)
     int pty_fd = pty_spawn(&child, term_cols, term_rows);
     if (pty_fd < 0)
         return 1;
-
-    // Initialize window
-    InitWindow(800, 600, "ghostling");
-    SetWindowState(FLAG_WINDOW_RESIZABLE);
-    SetTargetFPS(60);
-
-    // Load the embedded monospace font for terminal text rendering.
-    Font mono_font = LoadFontFromMemory(".ttf", font_jetbrains_mono, (int)sizeof(font_jetbrains_mono), 16, NULL, 0);
-    SetTextureFilter(mono_font.texture, TEXTURE_FILTER_BILINEAR);
 
     // Create the render state and its reusable iterator/cells handles once
     // up front.  These are updated each frame rather than recreated.
@@ -384,8 +432,8 @@ int main(void)
     assert(err == GHOSTTY_SUCCESS);
 
     // Track window size so we only recalculate the grid on actual changes.
-    int prev_width = GetScreenWidth();
-    int prev_height = GetScreenHeight();
+    int prev_width = scr_w;
+    int prev_height = scr_h;
 
     // Each frame: handle resize → read pty → process input → render.
     while (!WindowShouldClose()) {
@@ -397,8 +445,8 @@ int main(void)
             int w = GetScreenWidth();
             int h = GetScreenHeight();
             if (w != prev_width || h != prev_height) {
-                int cols = w / 10;  // approximate cell width in pixels
-                int rows = h / 18; // line height matches render_terminal()
+                int cols = (w - 2 * pad) / cell_width;
+                int rows = (h - 2 * pad) / cell_height;
                 if (cols < 1) cols = 1;
                 if (rows < 1) rows = 1;
                 term_cols = (uint16_t)cols;
@@ -430,7 +478,8 @@ int main(void)
         // Draw the current terminal screen.
         BeginDrawing();
         ClearBackground(win_bg);
-        render_terminal(render_state, row_iter, row_cells, mono_font);
+        render_terminal(render_state, row_iter, row_cells, mono_font,
+                        cell_width, cell_height, font_size);
         EndDrawing();
     }
 
