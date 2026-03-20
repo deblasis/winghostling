@@ -34,9 +34,26 @@ FetchContent_Declare(ghostty
 )
 FetchContent_MakeAvailable(ghostty)
 
+# --- Embed font as a C header ------------------------------------------------
+# Convert the TTF font into a C byte-array header so we don't rely on C23
+# #embed (which GCC < 15 doesn't support).
+set(FONT_INPUT "${CMAKE_SOURCE_DIR}/fonts/JetBrainsMono-Regular.ttf")
+set(FONT_HEADER "${CMAKE_BINARY_DIR}/font_jetbrains_mono.h")
+add_custom_command(
+  OUTPUT "${FONT_HEADER}"
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=${FONT_INPUT}
+    -DOUTPUT=${FONT_HEADER}
+    -DARRAY_NAME=font_jetbrains_mono
+    -P ${CMAKE_SOURCE_DIR}/bin2header.cmake
+  DEPENDS "${FONT_INPUT}" "${CMAKE_SOURCE_DIR}/bin2header.cmake"
+  COMMENT "Generating font_jetbrains_mono.h"
+)
+
 # --- Our Project -------------------------------------------------------------
-add_executable(${PROJECT_NAME} main.c)
-target_compile_features(${PROJECT_NAME} PRIVATE c_std_23)
+add_executable(${PROJECT_NAME} main.c "${FONT_HEADER}")
+target_compile_features(${PROJECT_NAME} PRIVATE c_std_11)
+target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 target_link_libraries(${PROJECT_NAME} raylib ghostty-vt)
 
 # macOS requires these system frameworks for raylib's windowing/input/rendering.
