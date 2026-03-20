@@ -10,7 +10,8 @@ int main(void)
     // Create an 80x24 terminal
     GhosttyTerminal terminal;
     GhosttyTerminalOptions opts = { .cols = 80, .rows = 24, .max_scrollback = 1000 };
-    assert(ghostty_terminal_new(NULL, &terminal, opts) == GHOSTTY_SUCCESS);
+    GhosttyResult err = ghostty_terminal_new(NULL, &terminal, opts);
+    assert(err == GHOSTTY_SUCCESS);
 
     // Feed some sample data
     const char *cmds[] = {

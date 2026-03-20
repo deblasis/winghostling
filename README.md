@@ -21,6 +21,13 @@ cmake --build build
 ./build/ghostling
 ```
 
+For a release (optimized) build:
+
+```sh
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
 After the initial configure, you only need to run the build step:
 
 ```sh
