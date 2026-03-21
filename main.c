@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -901,7 +900,10 @@ int main(void)
     GhosttyTerminal terminal;
     GhosttyTerminalOptions opts = { .cols = term_cols, .rows = term_rows, .max_scrollback = 1000 };
     GhosttyResult err = ghostty_terminal_new(NULL, &terminal, opts);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_terminal_new failed (%d)\n", err);
+        return 1;
+    }
 
     // Spawn a child shell connected to a pseudo-terminal.  The master fd
     // is what we read/write; the child's stdin/stdout/stderr are wired to
@@ -917,11 +919,17 @@ int main(void)
     // and the Kitty keyboard protocol.
     GhosttyKeyEncoder key_encoder = NULL;
     err = ghostty_key_encoder_new(NULL, &key_encoder);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_key_encoder_new failed (%d)\n", err);
+        return 1;
+    }
 
     GhosttyKeyEvent key_event = NULL;
     err = ghostty_key_event_new(NULL, &key_event);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_key_event_new failed (%d)\n", err);
+        return 1;
+    }
 
     // Create the mouse encoder and a reusable mouse event for input
     // handling.  The encoder translates mouse events into the correct
@@ -929,25 +937,40 @@ int main(void)
     // reporting and tracking mode (normal, button, any-event).
     GhosttyMouseEncoder mouse_encoder = NULL;
     err = ghostty_mouse_encoder_new(NULL, &mouse_encoder);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_mouse_encoder_new failed (%d)\n", err);
+        return 1;
+    }
 
     GhosttyMouseEvent mouse_event = NULL;
     err = ghostty_mouse_event_new(NULL, &mouse_event);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_mouse_event_new failed (%d)\n", err);
+        return 1;
+    }
 
     // Create the render state and its reusable iterator/cells handles once
     // up front.  These are updated each frame rather than recreated.
     GhosttyRenderState render_state = NULL;
     err = ghostty_render_state_new(NULL, &render_state);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_render_state_new failed (%d)\n", err);
+        return 1;
+    }
 
     GhosttyRenderStateRowIterator row_iter = NULL;
     err = ghostty_render_state_row_iterator_new(NULL, &row_iter);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_render_state_row_iterator_new failed (%d)\n", err);
+        return 1;
+    }
 
     GhosttyRenderStateRowCells row_cells = NULL;
     err = ghostty_render_state_row_cells_new(NULL, &row_cells);
-    assert(err == GHOSTTY_SUCCESS);
+    if (err != GHOSTTY_SUCCESS) {
+        fprintf(stderr, "ghostty_render_state_row_cells_new failed (%d)\n", err);
+        return 1;
+    }
 
     // Track window size so we only recalculate the grid on actual changes.
     int prev_width = scr_w;
