@@ -616,19 +616,6 @@ static bool handle_scrollbar(GhosttyTerminal terminal,
 // Rendering
 // ---------------------------------------------------------------------------
 
-// Resolve a style color to an RGB value using the render-state palette.
-// Falls back to the given default if the color is unset.
-static GhosttyColorRgb resolve_color(GhosttyStyleColor color,
-                                     const GhosttyRenderStateColors *colors,
-                                     GhosttyColorRgb fallback)
-{
-    switch (color.tag) {
-    case GHOSTTY_STYLE_COLOR_RGB:     return color.value.rgb;
-    case GHOSTTY_STYLE_COLOR_PALETTE: return colors->palette[color.value.palette];
-    default:                          return fallback;
-    }
-}
-
 // Render the current terminal screen using the RenderState API.
 //
 // For each row/cell we read the grapheme codepoints and the cell's style,
@@ -689,24 +676,14 @@ static void render_terminal(GhosttyRenderState render_state,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
 
             if (grapheme_len == 0) {
-                // The cell has no text, but it might be a bg-color-only cell.
-                // Check the content tag on the raw cell to find out.
-                GhosttyCell raw_cell = 0;
-                ghostty_render_state_row_cells_get(cells,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw_cell);
-
-                GhosttyCellContentTag content_tag = 0;
-                ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_CONTENT_TAG, &content_tag);
-
-                if (content_tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
-                    GhosttyColorPaletteIndex palette_idx = 0;
-                    ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_COLOR_PALETTE, &palette_idx);
-                    GhosttyColorRgb bg = colors.palette[palette_idx];
-                    DrawRectangle(x, y, cell_width, cell_height,
-                                  (Color){ bg.r, bg.g, bg.b, 255 });
-                } else if (content_tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
-                    GhosttyColorRgb bg = {0};
-                    ghostty_cell_get(raw_cell, GHOSTTY_CELL_DATA_COLOR_RGB, &bg);
+                // The cell has no text, but it might have a background
+                // color (e.g. from an erase with a color set).  The
+                // BG_COLOR data query resolves content-tag bg colors
+                // and palette indices for us, returning INVALID_VALUE
+                // when the cell has no background.
+                GhosttyColorRgb bg = {0};
+                if (ghostty_render_state_row_cells_get(cells,
+                        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS) {
                     DrawRectangle(x, y, cell_width, cell_height,
                                   (Color){ bg.r, bg.g, bg.b, 255 });
                 }
@@ -732,29 +709,38 @@ static void render_terminal(GhosttyRenderState render_state,
             }
             text[pos] = '\0';
 
-            // Read the style and resolve the foreground color.
+            // Resolve foreground and background colors using the new
+            // per-cell color queries.  These flatten style colors,
+            // content-tag colors, and palette lookups into a single RGB
+            // value, returning INVALID_VALUE when the cell has no
+            // explicit color (in which case we use the terminal default).
+            GhosttyColorRgb fg = colors.foreground;
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg);
+
+            GhosttyColorRgb bg_rgb = colors.background;
+            bool has_bg = ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg_rgb) == GHOSTTY_SUCCESS;
+
+            // Read the style for flags (inverse, bold, italic) — color
+            // resolution is handled above via the new API.
             GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
             ghostty_render_state_row_cells_get(cells,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
-
-            GhosttyColorRgb fg = resolve_color(style.fg_color, &colors, colors.foreground);
-            GhosttyColorRgb bg_rgb = resolve_color(style.bg_color, &colors, colors.background);
 
             // Inverse (reverse video): swap foreground and background colors.
             if (style.inverse) {
                 GhosttyColorRgb tmp = fg;
                 fg = bg_rgb;
                 bg_rgb = tmp;
-                // If the original bg was unset (none), the swap used the
-                // terminal default background — mark it as present so we
-                // draw the rectangle below.
+                has_bg = true;
             }
 
             Color ray_fg = { fg.r, fg.g, fg.b, 255 };
 
             // Draw a background rectangle if the cell has a non-default bg
             // or if inverse mode forced a swap.
-            if (style.bg_color.tag != GHOSTTY_STYLE_COLOR_NONE || style.inverse) {
+            if (has_bg) {
                 DrawRectangle(x, y, cell_width, cell_height, (Color){ bg_rgb.r, bg_rgb.g, bg_rgb.b, 255 });
             }
 
