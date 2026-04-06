@@ -861,6 +861,44 @@ static void log_build_info(void)
 }
 
 // ---------------------------------------------------------------------------
+// System callbacks (process-global, set once at startup)
+// ---------------------------------------------------------------------------
+
+// decode_png — decodes raw PNG data into RGBA pixels using Raylib's
+// stb_image-based decoder.  The output buffer is allocated through the
+// provided GhosttyAllocator so the library can free it later.
+static bool decode_png(void *userdata,
+                       const GhosttyAllocator *allocator,
+                       const uint8_t *data,
+                       size_t data_len,
+                       GhosttySysImage *out)
+{
+    (void)userdata;
+
+    // Raylib's LoadImageFromMemory decodes the PNG via stb_image.
+    Image img = LoadImageFromMemory(".png", data, (int)data_len);
+    if (img.data == NULL) return false;
+
+    // Convert to uncompressed R8G8B8A8 so we have a known pixel layout.
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+    const size_t pixel_len = (size_t)img.width * (size_t)img.height * 4;
+    uint8_t *pixels = ghostty_alloc(allocator, pixel_len);
+    if (!pixels) {
+        UnloadImage(img);
+        return false;
+    }
+    memcpy(pixels, img.data, pixel_len);
+    UnloadImage(img);
+
+    out->width    = (uint32_t)img.width;
+    out->height   = (uint32_t)img.height;
+    out->data     = pixels;
+    out->data_len = pixel_len;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Effects callbacks
 // ---------------------------------------------------------------------------
 
@@ -1043,6 +1081,12 @@ int main(void)
     GhosttyRenderStateRowCells row_cells = NULL;
     int exit_code = 0;
 
+    // Install the PNG decoder via the sys interface so the terminal can
+    // handle PNG images in the Kitty Graphics Protocol.  This is a
+    // process-global setting and must be done before any terminal is
+    // created.
+    ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, (const void *)decode_png);
+
     // Create a ghostty virtual terminal with the computed grid and 1000
     // lines of scrollback.  This holds all the parsed screen state (cells,
     // cursor, styles, modes) but knows nothing about the pty or the window.
@@ -1090,6 +1134,22 @@ int main(void)
         (const void *)effect_title_changed);
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
         (const void *)effect_color_scheme);
+
+    // Enable Kitty graphics by setting a storage limit.  Without this the
+    // terminal rejects all image data.  64 MiB is a generous default.
+    uint64_t kitty_storage_limit = 64 * 1024 * 1024;
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+        &kitty_storage_limit);
+
+    // Allow images to be transmitted via file, temp file, and shared
+    // memory mediums in addition to the default inline (direct) medium.
+    bool medium_enabled = true;
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+        &medium_enabled);
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+        &medium_enabled);
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+        &medium_enabled);
 
     // Create the key encoder and a reusable key event for input handling.
     // The encoder translates key events into the correct VT escape
