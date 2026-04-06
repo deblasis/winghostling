@@ -15,6 +15,12 @@
 - Never put side-effect calls inside `assert()` — removed in release builds
 - Comment heavily — explain *why*, not just *what*
 
+## Libghostty API Reference
+
+- The main header is `build/_deps/ghostty-src/zig-out/include/ghostty/vt.h`
+- These are generated/fetched during the build; run a build first if they
+  don't exist
+
 ## Updating Libghostty
 
 - Update CMakeLists.txt first to point to the new version
